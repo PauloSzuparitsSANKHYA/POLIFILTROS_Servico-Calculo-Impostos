@@ -1,0 +1,82 @@
+<sk-application ng-controller="TesteAlternativosController as ctrl"
+               creation-complete="ctrl.init()"
+               sk-body-overflow="hidden">
+
+    <sk-vbox flex layout-padding style="gap: 12px; overflow: auto;">
+
+        <!-- Inputs -->
+        <sk-simple-form sk-columns="3">
+            <sk-simple-item sk-label="Nro Unico da Nota (NUNOTA)">
+                <input type="number" ng-model="ctrl.nuNota" placeholder="Ex: 1984" style="width:150px"/>
+            </sk-simple-item>
+            <sk-simple-item sk-label="Cod. Produto (CODPROD)">
+                <input type="number" ng-model="ctrl.codProd" placeholder="Ex: 503216" style="width:150px"/>
+            </sk-simple-item>
+            <sk-simple-item sk-label=" ">
+                <button primary ng-click="ctrl.buscarAlternativos()" ng-disabled="ctrl.carregando">
+                    <span ng-if="!ctrl.carregando">BUSCAR ALTERNATIVOS</span>
+                    <span ng-if="ctrl.carregando">Buscando...</span>
+                </button>
+            </sk-simple-item>
+        </sk-simple-form>
+
+        <!-- Mensagem de erro -->
+        <div ng-if="ctrl.erro" style="color: red; padding: 8px; border: 1px solid red; border-radius: 4px;">
+            {{ctrl.erro}}
+        </div>
+
+        <!-- Resultado -->
+        <div ng-if="ctrl.produtos.length > 0">
+            <p style="margin: 0 0 6px; font-weight: bold;">
+                {{ctrl.produtos.length}} produto(s) encontrado(s) para NUNOTA={{ctrl.nuNota}}, CODPROD={{ctrl.codProd}}
+            </p>
+            <div style="overflow: auto; max-height: 60vh;">
+                <table style="border-collapse: collapse; width: 100%; font-size: 12px;">
+                    <thead>
+                        <tr style="background: #222; color: #e6a817; position: sticky; top: 0;">
+                            <th style="padding: 6px 10px; text-align: left; border: 1px solid #444;">Tp</th>
+                            <th style="padding: 6px 10px; text-align: left; border: 1px solid #444;">Cód.</th>
+                            <th style="padding: 6px 10px; text-align: left; border: 1px solid #444;">Descrição</th>
+                            <th style="padding: 6px 10px; text-align: left; border: 1px solid #444;">Marca</th>
+                            <th style="padding: 6px 10px; text-align: left; border: 1px solid #444;">Grupo Markup</th>
+                            <th style="padding: 6px 10px; text-align: right; border: 1px solid #444; color: #58a6ff;">Vlr. Ultima Cotação</th>
+                            <th style="padding: 6px 10px; text-align: right; border: 1px solid #444; color: #f78166;">Vlr. Ultima Venda</th>
+                            <th style="padding: 6px 10px; text-align: right; border: 1px solid #444; color: #3fb950;">Faixa 1</th>
+                            <th style="padding: 6px 10px; text-align: right; border: 1px solid #444; color: #3fb950;">Faixa 2</th>
+                            <th style="padding: 6px 10px; text-align: right; border: 1px solid #444; color: #3fb950;">Faixa 3</th>
+                            <th style="padding: 6px 10px; text-align: right; border: 1px solid #444; color: #3fb950;">Faixa 4</th>
+                            <th style="padding: 6px 10px; text-align: right; border: 1px solid #444; color: #3fb950;">Faixa 5</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr ng-repeat="p in ctrl.produtos"
+                            ng-style="p.ordemHierarquia === 0 ? {'background':'#1a3352','border-left':'3px solid #e6a817'} : {}">
+                            <td style="padding: 5px 10px; border: 1px solid #444;">
+                                <span ng-if="p.ordemHierarquia === 0" style="color:#e6a817; font-weight:bold;">ORIG</span>
+                                <span ng-if="p.ordemHierarquia !== 0" style="color:#8b949e;">ALT</span>
+                            </td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; font-family: monospace; color: #58a6ff;">{{p.codProd}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444;">{{p.descrProd}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; color: #8b949e;">{{p.marca || '-'}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; color: #8b949e;">{{p.descrGruMarkup || '-'}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; text-align: right; font-family: monospace; color: #58a6ff;">{{ctrl.fmt(p.vlrUltimaCotacao)}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; text-align: right; font-family: monospace; color: #f78166;">{{ctrl.fmt(p.vlrUltimaVenda)}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; text-align: right; font-family: monospace; color: #3fb950;">{{ctrl.fmt(p.faixa1)}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; text-align: right; font-family: monospace; color: #3fb950;">{{ctrl.fmt(p.faixa2)}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; text-align: right; font-family: monospace; color: #3fb950;">{{ctrl.fmt(p.faixa3)}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; text-align: right; font-family: monospace; color: #3fb950;">{{ctrl.fmt(p.faixa4)}}</td>
+                            <td style="padding: 5px 10px; border: 1px solid #444; text-align: right; font-family: monospace; color: #3fb950;">{{ctrl.fmt(p.faixa5)}}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Estado vazio após busca -->
+        <div ng-if="ctrl.buscaFeita && ctrl.produtos.length === 0 && !ctrl.erro" style="color: #8b949e; font-style: italic; padding: 16px;">
+            Nenhum produto encontrado.
+        </div>
+
+    </sk-vbox>
+
+</sk-application>
