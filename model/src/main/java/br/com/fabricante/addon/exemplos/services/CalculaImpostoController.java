@@ -76,8 +76,8 @@ public class CalculaImpostoController {
         "        NVL(EST.RESERVADO, 0) AS QTDRESERVADO," +
         "        COALESCE((SELECT SUM(I.QTDNEG) FROM TGFITE I JOIN TGFCAB C ON I.NUNOTA = C.NUNOTA WHERE I.CODPROD = PRO.CODPROD AND I.PENDENTE = 'S' AND C.TIPMOV = 'O' AND C.STATUSNOTA = 'L'), 0) AS COMPRAPENDENTE," +
         "        (SELECT TO_CHAR(MIN(ITE2.AD_DTPREVENTGER), 'DD/MM/YYYY') FROM TGFITE ITE2 JOIN TGFCAB CAB2 ON CAB2.NUNOTA = ITE2.NUNOTA WHERE ITE2.CODPROD = PRO.CODPROD AND ITE2.CODEMP = :CODEMP AND CAB2.STATUSNOTA = 'L' AND CAB2.PENDENTE = 'S' AND ITE2.AD_DTPREVENTGER IS NOT NULL) AS DTPROXENTREGA," +
-        "        (SELECT ITE.VLRUNIT FROM TGFCAB CAB JOIN TGFITE ITE ON ITE.NUNOTA = CAB.NUNOTA WHERE ITE.CODPROD = PRO.CODPROD AND CAB.CODPARC = :CODPARC AND CAB.CODTIPOPER = 1000 AND CAB.STATUSNOTA = 'L' AND CAB.DTMOV = (SELECT MAX(DTMOV) FROM TGFCAB WHERE CODTIPOPER = 1000 AND STATUSNOTA = 'L')) AS VLRULTIMACOTACAO," +
-        "        (SELECT ITE.VLRUNIT FROM TGFCAB CAB JOIN TGFITE ITE ON ITE.NUNOTA = CAB.NUNOTA WHERE ITE.CODPROD = PRO.CODPROD AND CAB.CODPARC = :CODPARC AND CAB.TIPMOV = 'V' AND CAB.STATUSNOTA = 'L' AND CAB.DTMOV = (SELECT MAX(DTMOV) FROM TGFCAB WHERE CAB.TIPMOV = 'V' AND STATUSNOTA = 'L')) AS VLRULTIMAVENDA" +
+        "        (SELECT MAX(ITE.VLRUNIT) FROM TGFCAB CAB JOIN TGFITE ITE ON ITE.NUNOTA = CAB.NUNOTA WHERE ITE.CODPROD = PRO.CODPROD AND CAB.CODPARC = :CODPARC AND CAB.CODTIPOPER = 1000 AND CAB.STATUSNOTA = 'L' AND CAB.DTMOV = (SELECT MAX(DTMOV) FROM TGFCAB WHERE CODTIPOPER = 1000 AND STATUSNOTA = 'L')) AS VLRULTIMACOTACAO," +
+        "        (SELECT MAX(ITE.VLRUNIT) FROM TGFCAB CAB JOIN TGFITE ITE ON ITE.NUNOTA = CAB.NUNOTA WHERE ITE.CODPROD = PRO.CODPROD AND CAB.CODPARC = :CODPARC AND CAB.TIPMOV = 'V' AND CAB.STATUSNOTA = 'L' AND CAB.DTMOV = (SELECT MAX(DTMOV) FROM TGFCAB WHERE CAB.TIPMOV = 'V' AND STATUSNOTA = 'L')) AS VLRULTIMAVENDA" +
         "    FROM LISTA_PRODUTOS LP" +
         "    JOIN TGFPRO PRO ON LP.CODPROD = PRO.CODPROD" +
         "    JOIN TGFGRU GRU ON PRO.CODGRUPOPROD = GRU.CODGRUPOPROD" +
@@ -118,96 +118,20 @@ public class CalculaImpostoController {
         ")" +
         " ORDER BY ORDEMHIERARQUIA ASC, CODPROD ASC";
 
-//    public CalculaImpostoResponseDTO calcularValorUnitario(CalculaImpostoRequestDTO request) throws Exception {
-//        BigDecimal codProd    = request.getCodProd();
-//        BigDecimal codTipOper = request.getCodTipOper();
-//        BigDecimal codEmp     = request.getCodEmp();
-//        BigDecimal codParc    = request.getCodParc();
-//
-//        BigDecimal[] vlrUnit = { BigDecimal.ZERO };
-//
-//        JapeSession.SessionHandle hnd = null;
-//        try {
-//            hnd = JapeSession.open();
-//
-//            hnd.execWithFakeTX(new JapeSession.TXBlock() {
-//                public void doWithTx() throws Exception {
-//
-//                    // 1. Busca dados do produto (CODVOL e local padrão)
-//                    DynamicVO produtoVO = JapeFactory.dao(DynamicEntityNames.PRODUTO).findByPK(codProd);
-//                    String codVol = produtoVO.asString("CODVOL");
-//                    BigDecimal codLocal = produtoVO.asBigDecimalOrZero("CODLOCALPADRAO");
-//
-//                    // 2. Busca CODNAT a partir da TOP (pega a versão mais recente)
-//                    Collection<DynamicVO> tops = JapeFactory.dao(DynamicEntityNames.TIPO_OPERACAO)
-//                            .find("CODTIPOPER = ? ORDER BY DHTIPOPER DESC", codTipOper);
-//                    BigDecimal codNat = BigDecimal.ONE;
-//                    if (!tops.isEmpty()) {
-//                        codNat = tops.iterator().next().asBigDecimalOrZero("CODNAT");
-//                    }
-//
-//                    // 3. Cria o CabecalhoNota
-//                    logger.info("Criando CabecalhoNota fake - CODPARC=" + codParc + " CODTIPOPER=" + codTipOper + " CODEMP=" + codEmp);
-//                    DynamicVO cabVO = JapeFactory.dao(DynamicEntityNames.CABECALHO_NOTA)
-//                            .create()
-//                            .set("CODPARC", codParc)
-//                            .set("CODTIPOPER", codTipOper)
-//                            .set("CODTIPVENDA", BigDecimal.ZERO)
-//                            .set("CODNAT", codNat)
-//                            .set("CODEMP", codEmp)
-//                            .set("DTNEG", new Timestamp(System.currentTimeMillis()))
-//                            .set("NUMNOTA", BigDecimal.ZERO)
-//                            .set("SERIENOTA", "0")
-//                            .save();
-//
-//                    BigDecimal nunota = cabVO.asBigDecimal("NUNOTA");
-//                    logger.info("CabecalhoNota criado - NUNOTA=" + nunota);
-//
-//                    // 4. Cria o ItemNota via CACHelper para que o Sankhya calcule os valores
-//                    AuthenticationInfo auth = AuthenticationInfo.getCurrent();
-//                    EntityFacade entityFacade = EntityFacadeFactory.getDWFFacade();
-//                    CACHelper cacHelper = new CACHelper();
-//
-//                    DynamicVO itemVO = (DynamicVO) entityFacade
-//                            .getDefaultValueObjectInstance(DynamicEntityNames.ITEM_NOTA);
-//
-//                    itemVO.setProperty("NUNOTA", nunota);
-//                    itemVO.setProperty("CODPROD", codProd);
-//                    itemVO.setProperty("QTDNEG", BigDecimal.ONE);
-//                    itemVO.setProperty("VLRUNIT", BigDecimal.ZERO);
-//                    itemVO.setProperty("VLRTOT", BigDecimal.ZERO);
-//                    itemVO.setProperty("CODVOL", codVol);
-//                    if (codLocal.compareTo(BigDecimal.ZERO) > 0) {
-//                        itemVO.setProperty("CODLOCALORIG", codLocal);
-//                    }
-//
-//                    Collection<PrePersistEntityState> itensNota = new ArrayList<>();
-//                    itensNota.add(PrePersistEntityState.build(entityFacade, DynamicEntityNames.ITEM_NOTA, itemVO));
-//
-//                    cacHelper.incluirAlterarItem(nunota, auth, itensNota, true);
-//                    logger.info("ItemNota inserido via CACHelper - NUNOTA=" + nunota + " CODPROD=" + codProd);
-//
-//                    // 5. Lê o VLRUNIT calculado pelo Sankhya
-//                    Collection<DynamicVO> itens = JapeFactory.dao(DynamicEntityNames.ITEM_NOTA)
-//                            .find("NUNOTA = ?", nunota);
-//
-//                    if (!itens.isEmpty()) {
-//                        vlrUnit[0] = itens.iterator().next().asBigDecimalOrZero("VLRUNIT");
-//                        logger.info("VLRUNIT calculado=" + vlrUnit[0]);
-//                    }
-//                    // ao terminar o bloco, execWithFakeTX faz rollback automaticamente
-//                }
-//            });
-//        } catch (Exception e) {
-//            throw new RuntimeException("Erro ao calcular valor unitário: " + e.getMessage(), e);
-//        } finally {
-//            JapeSession.close(hnd);
-//        }
-//
-//        CalculaImpostoResponseDTO response = new CalculaImpostoResponseDTO();
-//        response.setVlrUnit(vlrUnit[0]);
-//        return response;
-//    }
+    private static final String SQL_BATCH_PRODUTO =
+        "SELECT CODPROD, CODVOL, NVL(CODLOCALPADRAO, 0) AS CODLOCALPADRAO, NVL(QTDEMB, 1) AS QTDEMB" +
+        " FROM TGFPRO WHERE CODPROD IN (%s)";
+
+    private static final String SQL_BATCH_PRODUTO_REFERENCIA =
+        "SELECT CODPROD, CODVOL, NVL(CODLOCALPADRAO, 0) AS CODLOCALPADRAO, REFERENCIA" +
+        " FROM TGFPRO WHERE CODPROD IN (%s)";
+
+    private static final String SQL_IMPOSTOS_BATCH =
+        "SELECT ITE.CODPROD, NVL(ITE.PERCDESC, 0) AS PERCDESC, NVL(SUM(DIN.ALIQUOTA), 0) AS TOTAL_ALIQ" +
+        " FROM TGFITE ITE" +
+        " LEFT JOIN TGFDIN DIN ON DIN.NUNOTA = ITE.NUNOTA AND DIN.SEQUENCIA = ITE.SEQUENCIA" +
+        " WHERE ITE.NUNOTA = :NUNOTA" +
+        " GROUP BY ITE.CODPROD, ITE.PERCDESC";
 
     public BuscarAlternativosResponseDTO buscarAlternativos(BuscarAlternativosRequestDTO request) throws Exception {
         BigDecimal nuNota  = request.getNuNota();
@@ -222,7 +146,7 @@ public class CalculaImpostoController {
         try {
             hnd = JapeSession.open();
 
-            // 1. Ler CabecalhoNota existente para obter CODEMP, CODPARC, CODTIPOPER e CODNAT
+            // 1. Ler CabecalhoNota existente
             DynamicVO cabExistente = JapeFactory.dao(DynamicEntityNames.CABECALHO_NOTA).findByPK(nuNota);
             if (cabExistente == null) {
                 throw new IllegalArgumentException("NF/Pedido não encontrado para NUNOTA=" + nuNota);
@@ -235,7 +159,7 @@ public class CalculaImpostoController {
             BigDecimal codCenCus   = cabExistente.asBigDecimalOrZero("CODCENCUS");
             logger.info("buscarAlternativos - lido NUNOTA=" + nuNota + " CODEMP=" + codEmp + " CODPARC=" + codParc + " CODTIPOPER=" + codTipOper + " CODTIPVENDA=" + codTipVenda);
 
-            // 2. Executar SQL para obter produtos e alternativos com numeradores de preço
+            // 2. SQL principal: busca produtos e alternativos com faixas de preço calculadas
             EntityFacade dwf = EntityFacadeFactory.getDWFFacade();
             NativeSql nativeSql = new NativeSql(dwf.getJdbcWrapper());
             nativeSql.setNamedParameter("CODEMP", codEmp);
@@ -270,8 +194,12 @@ public class CalculaImpostoController {
             }
             logger.info("buscarAlternativos - produtos encontrados: " + produtos.size() + " para CODPROD=" + codProd);
 
-            // 3. Calcular impostos para cada produto via fake transaction
+            // 3. Calcular impostos via fake transaction
             if (!produtos.isEmpty()) {
+
+                // 3a. Pre-carrega dados de todos os produtos em uma única query
+                Map<BigDecimal, Object[]> produtoDataMap = carregarDadosProdutos(dwf, produtos);
+
                 final BigDecimal fCodEmp      = codEmp;
                 final BigDecimal fCodParc     = codParc;
                 final BigDecimal fCodTipOper  = codTipOper;
@@ -282,7 +210,6 @@ public class CalculaImpostoController {
                 hnd.execWithFakeTX(new JapeSession.TXBlock() {
                     public void doWithTx() throws Exception {
 
-                        // Cria CabecalhoNota fake copiando todos os campos relevantes da nota real (Pattern 2 - skill sankhya-cabecalho-item)
                         DynamicVO cabVO = JapeFactory.dao(DynamicEntityNames.CABECALHO_NOTA)
                                 .create()
                                 .set("CODPARC",    fCodParc)
@@ -302,14 +229,19 @@ public class CalculaImpostoController {
                         EntityFacade entityFacade = EntityFacadeFactory.getDWFFacade();
                         CACHelper cacHelper = new CACHelper();
 
-                        // Para cada produto, cria ItemNota e soma alíquotas via TGFDIN
+                        // Fase 1: insere todos os itens de uma vez
                         for (ProdutoAlternativoDTO p : produtos) {
                             BigDecimal codProdItem = p.getCodProd();
                             try {
-                                DynamicVO prodItemVO = JapeFactory.dao(DynamicEntityNames.PRODUTO).findByPK(codProdItem);
-                                String codVol = prodItemVO.asString("CODVOL");
-                                BigDecimal codLocal = prodItemVO.asBigDecimalOrZero("CODLOCALPADRAO");
-                                BigDecimal multipVenda = prodItemVO.asBigDecimalOrZero("QTDEMB");
+                                Object[] prodData = produtoDataMap.get(codProdItem);
+                                if (prodData == null) {
+                                    logger.warning("buscarAlternativos - CODPROD=" + codProdItem + " não encontrado no pre-carregamento");
+                                    failedProducts.add(codProdItem);
+                                    continue;
+                                }
+                                String codVol       = (String)     prodData[0];
+                                BigDecimal codLocal  = (BigDecimal) prodData[1];
+                                BigDecimal multipVenda = (BigDecimal) prodData[2];
                                 BigDecimal qtdNeg = multipVenda.compareTo(BigDecimal.ONE) > 0 ? multipVenda : BigDecimal.ONE;
 
                                 DynamicVO itemVO = (DynamicVO) entityFacade
@@ -328,41 +260,37 @@ public class CalculaImpostoController {
                                 Collection<PrePersistEntityState> itensNota = new ArrayList<>();
                                 itensNota.add(PrePersistEntityState.build(entityFacade, DynamicEntityNames.ITEM_NOTA, itemVO));
                                 cacHelper.incluirAlterarItem(nunota, auth, itensNota, true);
-                                executarCalculoImpostos(nunota);
-
-                                Collection<DynamicVO> itens = JapeFactory.dao(DynamicEntityNames.ITEM_NOTA)
-                                        .find("NUNOTA = ? AND CODPROD = ?", nunota, codProdItem);
-                                if (!itens.isEmpty()) {
-                                    DynamicVO itemLido = itens.iterator().next();
-                                    BigDecimal sequencia = itemLido.asBigDecimalOrZero("SEQUENCIA");
-                                    BigDecimal percDesc  = itemLido.asBigDecimalOrZero("PERCDESC");
-                                    percDescMap.put(codProdItem, percDesc);
-
-                                    NativeSql sqlDin = new NativeSql(entityFacade.getJdbcWrapper());
-                                    sqlDin.setNamedParameter("NUNOTA", nunota);
-                                    sqlDin.setNamedParameter("SEQUENCIA", sequencia);
-                                    ResultSet rsDin = sqlDin.executeQuery(
-                                        "SELECT NVL(SUM(ALIQUOTA), 0) AS TOTAL_ALIQ FROM TGFDIN WHERE NUNOTA = :NUNOTA AND SEQUENCIA = :SEQUENCIA"
-                                    );
-                                    BigDecimal totalAliq = BigDecimal.ZERO;
-                                    if (rsDin.next()) {
-                                        BigDecimal v = rsDin.getBigDecimal("TOTAL_ALIQ");
-                                        if (v != null) totalAliq = v;
-                                    }
-                                    impostosMap.put(codProdItem, totalAliq);
-                                    logger.info("CODPROD=" + codProdItem + " SEQUENCIA=" + sequencia + " TOTAL_ALIQ_TGFDIN=" + totalAliq);
-                                }
                             } catch (Exception ex) {
-                                logger.warning("buscarAlternativos - CODPROD=" + codProdItem + " ignorado no cálculo de impostos: " + ex.getMessage());
+                                logger.warning("buscarAlternativos - CODPROD=" + codProdItem + " ignorado: " + ex.getMessage());
                                 failedProducts.add(codProdItem);
                             }
                         }
+
+                        // Fase 2: calcula impostos uma única vez para todos os itens inseridos
+                        try {
+                            executarCalculoImpostos(nunota);
+                        } catch (Exception ex) {
+                            logger.warning("buscarAlternativos - falhou no cálculo de impostos: " + ex.getMessage());
+                            for (ProdutoAlternativoDTO p : produtos) failedProducts.add(p.getCodProd());
+                            return;
+                        }
+
+                        // Fase 3: lê PERCDESC e alíquotas de todos os produtos em uma única query
+                        NativeSql sqlImpostos = new NativeSql(entityFacade.getJdbcWrapper());
+                        sqlImpostos.setNamedParameter("NUNOTA", nunota);
+                        ResultSet rsImpostos = sqlImpostos.executeQuery(SQL_IMPOSTOS_BATCH);
+                        while (rsImpostos.next()) {
+                            BigDecimal cp = rsImpostos.getBigDecimal("CODPROD");
+                            impostosMap.put(cp, rsImpostos.getBigDecimal("TOTAL_ALIQ"));
+                            percDescMap.put(cp, rsImpostos.getBigDecimal("PERCDESC"));
+                        }
+                        logger.info("buscarAlternativos - impostos calculados para " + impostosMap.size() + " produto(s)");
                         // execWithFakeTX faz rollback automático — nenhuma nota persiste
                     }
                 });
             }
 
-            // 3. Aplicar fórmula: preco_final_faixa = numerador / (1 - impostos/100) * (1 - percDesc/100)
+            // 4. Aplicar fórmula: preco_final_faixa = numerador / (1 - impostos/100) * (1 - percDesc/100)
             for (ProdutoAlternativoDTO p : produtos) {
                 if (failedProducts.contains(p.getCodProd())) {
                     p.setFaixa1(null);
@@ -372,7 +300,6 @@ public class CalculaImpostoController {
                     p.setFaixa5(null);
                     continue;
                 }
-                // Passo 1: dividir pelo denominador de impostos
                 BigDecimal impostos = impostosMap.getOrDefault(p.getCodProd(), BigDecimal.ZERO);
                 BigDecimal denominador = BigDecimal.ONE.subtract(
                         impostos.divide(new BigDecimal("100"), 10, RoundingMode.HALF_UP));
@@ -383,7 +310,6 @@ public class CalculaImpostoController {
                     p.setFaixa4(aplicarDenominador(p.getFaixa4(), denominador));
                     p.setFaixa5(aplicarDenominador(p.getFaixa5(), denominador));
                 }
-                // Passo 2: aplicar desconto calculado pelo Sankhya (PERCDESC)
                 BigDecimal percDesc = percDescMap.getOrDefault(p.getCodProd(), BigDecimal.ZERO);
                 p.setPercDesc(percDesc);
                 if (percDesc.compareTo(BigDecimal.ZERO) > 0) {
@@ -421,6 +347,23 @@ public class CalculaImpostoController {
         try {
             hnd = JapeSession.open();
 
+            DynamicVO cab = JapeFactory.dao(DynamicEntityNames.CABECALHO_NOTA).findByPK(nuNota);
+            if (cab == null) {
+                throw new IllegalArgumentException("Nota não encontrada: NUNOTA=" + nuNota);
+            }
+            if ("L".equals(cab.asString("STATUSNOTA"))) {
+                throw new IllegalStateException("Não é permitido incluir itens: NUNOTA=" + nuNota + " está com status Liberado (STATUSNOTA='L').");
+            }
+
+            // Pre-carrega todos os produtos (e origens) em uma única query antes da transação
+            java.util.Set<BigDecimal> codProdParaCarregar = new java.util.HashSet<>();
+            for (ItemCarrinhoDTO item : itens) {
+                codProdParaCarregar.add(item.getCodProd());
+                if (item.getCodProdOrigem() != null) codProdParaCarregar.add(item.getCodProdOrigem());
+            }
+            Map<BigDecimal, Object[]> produtoDataMap = carregarDadosProdutosComReferencia(
+                    EntityFacadeFactory.getDWFFacade(), codProdParaCarregar);
+
             hnd.execEnsuringTX(new JapeSession.TXBlock() {
                 public void doWithTx() throws Exception {
                     JapeWrapper iteDAO = JapeFactory.dao(DynamicEntityNames.ITEM_NOTA);
@@ -431,9 +374,12 @@ public class CalculaImpostoController {
                         BigDecimal qtd     = item.getQtd() != null && item.getQtd().compareTo(BigDecimal.ZERO) > 0
                                              ? item.getQtd() : BigDecimal.ONE;
 
-                        DynamicVO prodVO    = JapeFactory.dao(DynamicEntityNames.PRODUTO).findByPK(codProd);
-                        String    codVol    = prodVO.asString("CODVOL");
-                        BigDecimal codLocal = prodVO.asBigDecimalOrZero("CODLOCALPADRAO");
+                        Object[] prodData = produtoDataMap.get(codProd);
+                        if (prodData == null) {
+                            throw new IllegalStateException("Dados do produto não encontrados: CODPROD=" + codProd);
+                        }
+                        String    codVol    = (String)     prodData[0];
+                        BigDecimal codLocal = (BigDecimal) prodData[1];
 
                         FluidCreateVO itemVO = iteDAO.create();
                         itemVO.set("NUNOTA",   nuNota);
@@ -452,13 +398,13 @@ public class CalculaImpostoController {
                         itemVO.set("VLRIPI",   BigDecimal.ZERO);
                         itemVO.set("ALIQIPI",  BigDecimal.ZERO);
                         if (item.getCodProdOrigem() != null) {
-                            DynamicVO prodOrigemVO = JapeFactory.dao(DynamicEntityNames.PRODUTO).findByPK(item.getCodProdOrigem());
-                            String referencia = prodOrigemVO != null ? prodOrigemVO.asString("REFERENCIA") : null;
+                            Object[] origemData = produtoDataMap.get(item.getCodProdOrigem());
+                            String referencia = origemData != null ? (String) origemData[2] : null;
                             itemVO.set("AD_REFSOLICITADA", referencia);
                         }
-                            BigDecimal faixaPreco = calcularFaixaPreco(vlrUnit,
-                                item.getFaixa1(), item.getFaixa2(), item.getFaixa3(),
-                                item.getFaixa4(), item.getFaixa5());
+                        BigDecimal faixaPreco = calcularFaixaPrecoItem(vlrUnit,
+                            item.getFaixa1(), item.getFaixa2(), item.getFaixa3(),
+                            item.getFaixa4(), item.getFaixa5());
                         if (faixaPreco != null) {
                             itemVO.set("AD_FAIXAPRECO", faixaPreco);
                         }
@@ -481,6 +427,66 @@ public class CalculaImpostoController {
         response.setMensagem(inseridos[0] + " item(ns) inserido(s) com sucesso na nota " + nuNota + ".");
         response.setQtdItensInseridos(inseridos[0]);
         return response;
+    }
+
+    private Map<BigDecimal, Object[]> carregarDadosProdutos(EntityFacade dwf, List<ProdutoAlternativoDTO> produtos) throws Exception {
+        Map<BigDecimal, Object[]> map = new HashMap<>();
+        StringBuilder inList = new StringBuilder();
+        for (ProdutoAlternativoDTO p : produtos) {
+            if (inList.length() > 0) inList.append(",");
+            inList.append(p.getCodProd().toPlainString());
+        }
+        NativeSql sql = new NativeSql(dwf.getJdbcWrapper());
+        ResultSet rs = sql.executeQuery(String.format(SQL_BATCH_PRODUTO, inList));
+        while (rs.next()) {
+            BigDecimal cp = rs.getBigDecimal("CODPROD");
+            map.put(cp, new Object[]{
+                rs.getString("CODVOL"),
+                rs.getBigDecimal("CODLOCALPADRAO"),
+                rs.getBigDecimal("QTDEMB")
+            });
+        }
+        logger.info("carregarDadosProdutos - carregados " + map.size() + " produto(s)");
+        return map;
+    }
+
+    private Map<BigDecimal, Object[]> carregarDadosProdutosComReferencia(EntityFacade dwf, java.util.Set<BigDecimal> codProds) throws Exception {
+        Map<BigDecimal, Object[]> map = new HashMap<>();
+        if (codProds.isEmpty()) return map;
+        StringBuilder inList = new StringBuilder();
+        for (BigDecimal cp : codProds) {
+            if (inList.length() > 0) inList.append(",");
+            inList.append(cp.toPlainString());
+        }
+        NativeSql sql = new NativeSql(dwf.getJdbcWrapper());
+        ResultSet rs = sql.executeQuery(String.format(SQL_BATCH_PRODUTO_REFERENCIA, inList));
+        while (rs.next()) {
+            BigDecimal cp = rs.getBigDecimal("CODPROD");
+            map.put(cp, new Object[]{
+                rs.getString("CODVOL"),
+                rs.getBigDecimal("CODLOCALPADRAO"),
+                rs.getString("REFERENCIA")
+            });
+        }
+        return map;
+    }
+
+    private BigDecimal calcularFaixaPrecoItem(BigDecimal vlrUnit, BigDecimal... faixas) {
+        if (vlrUnit == null || vlrUnit.compareTo(BigDecimal.ZERO) <= 0) return null;
+        BigDecimal minFaixa = null;
+        int melhorIndice = -1;
+        BigDecimal menorDiff = null;
+        for (int i = 0; i < faixas.length; i++) {
+            if (faixas[i] == null) continue;
+            if (minFaixa == null || faixas[i].compareTo(minFaixa) < 0) minFaixa = faixas[i];
+            BigDecimal diff = vlrUnit.subtract(faixas[i]).abs();
+            if (menorDiff == null || diff.compareTo(menorDiff) < 0) {
+                menorDiff = diff;
+                melhorIndice = i;
+            }
+        }
+        if (minFaixa != null && vlrUnit.compareTo(minFaixa) < 0) return BigDecimal.ZERO;
+        return melhorIndice >= 0 ? new BigDecimal(melhorIndice + 1) : null;
     }
 
     private void calculaImpostoItensETotalizaNota(BigDecimal nunota) throws Exception {
@@ -516,18 +522,4 @@ public class CalculaImpostoController {
         return valor.multiply(fator).setScale(2, RoundingMode.HALF_UP);
     }
 
-    private BigDecimal calcularFaixaPreco(BigDecimal vlrUnit, BigDecimal... faixas) {
-        if (vlrUnit == null || vlrUnit.compareTo(BigDecimal.ZERO) <= 0) return null;
-        int melhorIndice = -1;
-        BigDecimal menorDiff = null;
-        for (int i = 0; i < faixas.length; i++) {
-            if (faixas[i] == null) continue;
-            BigDecimal diff = vlrUnit.subtract(faixas[i]).abs();
-            if (menorDiff == null || diff.compareTo(menorDiff) < 0) {
-                menorDiff = diff;
-                melhorIndice = i;
-            }
-        }
-        return melhorIndice >= 0 ? new BigDecimal(melhorIndice + 1) : null;
-    }
 }
