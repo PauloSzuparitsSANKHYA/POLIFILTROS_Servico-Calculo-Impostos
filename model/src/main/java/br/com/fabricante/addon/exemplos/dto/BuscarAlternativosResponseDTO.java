@@ -7,5 +7,6 @@ import java.util.List;
 public class BuscarAlternativosResponseDTO {
 
     private List<ProdutoAlternativoDTO> produtos;
+    private boolean temMais;
 
 }

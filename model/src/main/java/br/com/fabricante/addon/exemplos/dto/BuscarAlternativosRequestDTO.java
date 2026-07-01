@@ -8,5 +8,7 @@ public class BuscarAlternativosRequestDTO {
 
     private BigDecimal nuNota;
     private BigDecimal codProd;
+    private int offset = 0;
+    private int limit  = 10;
 
 }
