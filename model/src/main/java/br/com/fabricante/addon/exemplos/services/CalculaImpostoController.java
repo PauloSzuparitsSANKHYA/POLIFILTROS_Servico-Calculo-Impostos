@@ -15,20 +15,22 @@ import br.com.sankhya.jape.EntityFacade;
 import br.com.sankhya.jape.core.JapeSession;
 import br.com.sankhya.jape.sql.NativeSql;
 import br.com.sankhya.jape.vo.DynamicVO;
+import br.com.sankhya.jape.vo.PrePersistEntityState;
 import br.com.sankhya.jape.wrapper.JapeFactory;
 import br.com.sankhya.jape.wrapper.JapeWrapper;
-import br.com.sankhya.jape.wrapper.fluid.FluidCreateVO;
 import br.com.sankhya.modelcore.auth.AuthenticationInfo;
 import br.com.sankhya.modelcore.comercial.BarramentoRegra;
 import br.com.sankhya.modelcore.comercial.CentralFaturamento;
 import br.com.sankhya.modelcore.comercial.ConfirmacaoNotaHelper;
 import br.com.sankhya.modelcore.comercial.LiberacaoSolicitada;
+import br.com.sankhya.modelcore.comercial.centrais.CACHelper;
 import br.com.sankhya.modelcore.comercial.impostos.DadosImpostoItemNota;
 import br.com.sankhya.modelcore.comercial.impostos.ImpostosHelpper;
 import br.com.sankhya.modelcore.dwfdata.vo.ItemNotaVO;
 import br.com.sankhya.modelcore.util.DynamicEntityNames;
 import br.com.sankhya.modelcore.util.EntityFacadeFactory;
 import br.com.sankhya.studio.annotations.Service;
+import br.com.sankhya.ws.ServiceContext;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -40,6 +42,8 @@ import java.util.logging.Logger;
 public class CalculaImpostoController {
 
     private static final Logger logger = Logger.getLogger(CalculaImpostoController.class.getName());
+
+    private final CACHelper cacHelper = new CACHelper();
 
     private static final String SQL_ALTERNATIVOS =
         "WITH LISTA_PRODUTOS AS (" +
@@ -311,7 +315,22 @@ public class CalculaImpostoController {
                                 .add(aliqCofins)
                                 .add(aliqIss)).setScale(2);
 
-                        BigDecimal percDescItem = itemDVO.asBigDecimalOrZero("PERCDESC");
+                        BigDecimal percDescItem = BigDecimal.ZERO;
+                        try {
+                            JapeWrapper descontoDAO = JapeFactory.dao(DynamicEntityNames.DESCONTO);
+                            java.sql.Timestamp hoje = new java.sql.Timestamp(System.currentTimeMillis());
+                            Collection<DynamicVO> descontos = descontoDAO.findAndOrderBy(
+                                    "(CODEMP = ? OR CODEMP = 0) AND (CODPARC = ? OR CODPARC = 0)"
+                                            + " AND CODPROD = ? AND DTINICIAL <= ? AND DTFINAL >= ?",
+                                    "DTFINAL DESC",
+                                    codEmp, codParc, codProdItem, hoje, hoje);
+                            if (descontos != null && !descontos.isEmpty()) {
+                                percDescItem = descontos.iterator().next().asBigDecimalOrZero("PERCENTUAL");
+                            }
+                        } catch (Exception exDesconto) {
+                            logger.warning("buscarAlternativos - CODPROD=" + codProdItem
+                                    + " falha ao consultar desconto promocional (Desconto/TGFDES): " + exDesconto.getMessage());
+                        }
 
                         logger.info("[IMPOSTOS] CODPROD=" + codProdItem
                                 + " | totalAliq=" + totalAliq + "% | percDesc=" + percDescItem + "%"
@@ -416,12 +435,14 @@ public class CalculaImpostoController {
                 codProdParaCarregar.add(item.getCodProd());
                 if (item.getCodProdOrigem() != null) codProdParaCarregar.add(item.getCodProdOrigem());
             }
-            Map<BigDecimal, Object[]> produtoDataMap = carregarDadosProdutosComReferencia(
-                    EntityFacadeFactory.getDWFFacade(), codProdParaCarregar);
+            final EntityFacade dwf = EntityFacadeFactory.getDWFFacade();
+            Map<BigDecimal, Object[]> produtoDataMap = carregarDadosProdutosComReferencia(dwf, codProdParaCarregar);
+
+            final ServiceContext serviceContext = ServiceContext.getCurrent();
 
             hnd.execEnsuringTX(new JapeSession.TXBlock() {
                 public void doWithTx() throws Exception {
-                    JapeWrapper iteDAO = JapeFactory.dao(DynamicEntityNames.ITEM_NOTA);
+                    Collection<PrePersistEntityState> itensNotaStates = new ArrayList<>();
 
                     for (ItemCarrinhoDTO item : itens) {
                         BigDecimal codProd = item.getCodProd();
@@ -436,38 +457,43 @@ public class CalculaImpostoController {
                         String    codVol    = (String)     prodData[0];
                         BigDecimal codLocal = (BigDecimal) prodData[1];
 
-                        FluidCreateVO itemVO = iteDAO.create();
-                        itemVO.set("NUNOTA",   nuNota);
-                        itemVO.set("CODPROD",  codProd);
-                        itemVO.set("QTDNEG",   qtd);
-                        itemVO.set("CODVOL",   codVol);
-                        itemVO.set("VLRUNIT",  vlrUnit);
-                        itemVO.set("VLRTOT",   vlrUnit.multiply(qtd));
+                        DynamicVO itemVO = (DynamicVO) dwf.getDefaultValueObjectInstance(DynamicEntityNames.ITEM_NOTA);
+                        itemVO.setProperty("NUNOTA",   nuNota);
+                        itemVO.setProperty("CODPROD",  codProd);
+                        itemVO.setProperty("QTDNEG",   qtd);
+                        itemVO.setProperty("CODVOL",   codVol);
+                        itemVO.setProperty("VLRUNIT",  vlrUnit);
+                        itemVO.setProperty("VLRTOT",   vlrUnit.multiply(qtd));
                         if (codLocal.compareTo(BigDecimal.ZERO) > 0) {
-                            itemVO.set("CODLOCALORIG", codLocal);
+                            itemVO.setProperty("CODLOCALORIG", codLocal);
                         }
-                        itemVO.set("BASEICMS", BigDecimal.ZERO);
-                        itemVO.set("VLRICMS",  BigDecimal.ZERO);
-                        itemVO.set("ALIQICMS", BigDecimal.ZERO);
-                        itemVO.set("BASEIPI",  BigDecimal.ZERO);
-                        itemVO.set("VLRIPI",   BigDecimal.ZERO);
-                        itemVO.set("ALIQIPI",  BigDecimal.ZERO);
+                        itemVO.setProperty("BASEICMS", BigDecimal.ZERO);
+                        itemVO.setProperty("VLRICMS",  BigDecimal.ZERO);
+                        itemVO.setProperty("ALIQICMS", BigDecimal.ZERO);
+                        itemVO.setProperty("BASEIPI",  BigDecimal.ZERO);
+                        itemVO.setProperty("VLRIPI",   BigDecimal.ZERO);
+                        itemVO.setProperty("ALIQIPI",  BigDecimal.ZERO);
                         if (item.getCodProdOrigem() != null) {
                             Object[] origemData = produtoDataMap.get(item.getCodProdOrigem());
                             String referencia = origemData != null ? (String) origemData[2] : null;
-                            itemVO.set("AD_REFSOLICITADA", referencia);
+                            itemVO.setProperty("AD_REFSOLICITADA", referencia);
                         }
                         BigDecimal faixaPreco = calcularFaixaPrecoItem(vlrUnit,
                             item.getFaixa1(), item.getFaixa2(), item.getFaixa3(),
                             item.getFaixa4(), item.getFaixa5());
-                        if (faixaPreco != null) {
-                            itemVO.set("AD_FAIXAPRECO", faixaPreco);
-                        }
-                        itemVO.save();
+
+                        itemVO.setProperty("AD_FAIXAPRECO", faixaPreco);
+
+
+                        PrePersistEntityState itePreState = PrePersistEntityState.build(dwf, DynamicEntityNames.ITEM_NOTA, itemVO);
+                        itePreState.getNewVO();
+                        itensNotaStates.add(itePreState);
 
                         logger.info("incluirItens - CODPROD=" + codProd + " QTD=" + qtd + " VLR=" + vlrUnit + " NUNOTA=" + nuNota);
                         inseridos[0]++;
                     }
+
+                    cacHelper.incluirAlterarItem(nuNota, serviceContext, itensNotaStates, true);
                 }
             });
         } catch (Exception e) {
