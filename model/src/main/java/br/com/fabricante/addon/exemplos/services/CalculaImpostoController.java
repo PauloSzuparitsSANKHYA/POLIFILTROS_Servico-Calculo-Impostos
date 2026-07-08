@@ -24,7 +24,6 @@ import br.com.sankhya.modelcore.comercial.CentralFaturamento;
 import br.com.sankhya.modelcore.comercial.ConfirmacaoNotaHelper;
 import br.com.sankhya.modelcore.comercial.LiberacaoSolicitada;
 import br.com.sankhya.modelcore.comercial.centrais.CACHelper;
-import br.com.sankhya.modelcore.comercial.impostos.DadosImpostoItemNota;
 import br.com.sankhya.modelcore.comercial.impostos.ImpostosHelpper;
 import br.com.sankhya.modelcore.dwfdata.vo.ItemNotaVO;
 import br.com.sankhya.modelcore.util.DynamicEntityNames;
@@ -148,6 +147,31 @@ public class CalculaImpostoController {
         "SELECT CODPROD, CODVOL, NVL(CODLOCALPADRAO, 0) AS CODLOCALPADRAO, REFERENCIA" +
         " FROM TGFPRO WHERE CODPROD IN (%s)";
 
+    private static final String SQL_PIS_COFINS =
+        "SELECT NOMEIMP, ALIQ FROM (" +
+        "    SELECT" +
+        "        IFE.NOMEIMP," +
+        "        IFE.ALIQ," +
+        "        ROW_NUMBER() OVER (" +
+        "            PARTITION BY IFE.NOMEIMP" +
+        "            ORDER BY IFE.CODTIPOPER DESC, IFE.CODPARC DESC, IFE.CODEMP DESC" +
+        "        ) AS RN" +
+        "    FROM TGFIFE IFE" +
+        "    INNER JOIN TGFPRO PRO ON PRO.CODPROD = :CODPROD" +
+        "    WHERE" +
+        "    (" +
+        "        (IFE.NOMEIMP = 'PIS'    AND IFE.GRUPOIMP = PRO.GRUPOPIS)" +
+        "        OR" +
+        "        (IFE.NOMEIMP = 'COFINS' AND IFE.GRUPOIMP = PRO.GRUPOCOFINS)" +
+        "    )" +
+        "    AND IFE.ENTSAI IN ('A','S')" +
+        "    AND (IFE.CODEMP = 0 OR IFE.CODEMP = :CODEMP)" +
+        "    AND (IFE.CODPARC = 0 OR IFE.CODPARC = :CODPARC)" +
+        "    AND (IFE.CODTIPOPER = 0 OR IFE.CODTIPOPER = :CODTIPOPER)" +
+        ") " +
+        "WHERE RN = 1 " +
+        "ORDER BY NOMEIMP";
+
     public BuscarProdutosResponseDTO buscarProdutos(BuscarProdutosRequestDTO request) throws Exception {
         int offset = request.getOffset() < 0  ? 0  : request.getOffset();
         int limit  = request.getLimit()  <= 0 ? 20 : request.getLimit();
@@ -262,6 +286,7 @@ public class CalculaImpostoController {
                 imposto.setAtualizaImpostos(false);
                 imposto.setCalcularTudo(true);
 
+
                 for (ProdutoAlternativoDTO p : produtos) {
                     BigDecimal codProdItem = p.getCodProd();
                     if (!temCusto(p)) {
@@ -284,19 +309,21 @@ public class CalculaImpostoController {
                         imposto.calcularImpostosItem(itemVO, codProdItem);
 
                         BigDecimal aliqPis = BigDecimal.ZERO;
-                        Collection<DadosImpostoItemNota> pisDados = imposto.calcularPIS(itemVO);
-                        if (pisDados != null) {
-                            for (DadosImpostoItemNota d : pisDados) {
-                                if (d.getAliquota() != null) aliqPis = aliqPis.add(d.getAliquota());
-                            }
-                        }
-
-
                         BigDecimal aliqCofins = BigDecimal.ZERO;
-                        Collection<DadosImpostoItemNota> cofinsDados = imposto.calcularCOFINS(itemVO);
-                        if (cofinsDados != null) {
-                            for (DadosImpostoItemNota d : cofinsDados) {
-                                if (d.getAliquota() != null) aliqCofins = aliqCofins.add(d.getAliquota());
+                        NativeSql sqlPisCofins = new NativeSql(entityFacade.getJdbcWrapper());
+                        sqlPisCofins.setNamedParameter("CODPROD", codProdItem);
+                        sqlPisCofins.setNamedParameter("CODEMP", codEmp);
+                        sqlPisCofins.setNamedParameter("CODPARC", codParc);
+                        sqlPisCofins.setNamedParameter("CODTIPOPER", codTipOper);
+                        ResultSet rsPisCofins = sqlPisCofins.executeQuery(SQL_PIS_COFINS);
+                        while (rsPisCofins.next()) {
+                            String nomeImp = rsPisCofins.getString("NOMEIMP");
+                            BigDecimal aliq = rsPisCofins.getBigDecimal("ALIQ");
+                            if (aliq == null) continue;
+                            if ("PIS".equals(nomeImp)) {
+                                aliqPis = aliq;
+                            } else if ("COFINS".equals(nomeImp)) {
+                                aliqCofins = aliq;
                             }
                         }
 
