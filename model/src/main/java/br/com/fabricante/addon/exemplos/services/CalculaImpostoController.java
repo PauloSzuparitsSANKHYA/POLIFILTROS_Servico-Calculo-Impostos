@@ -76,7 +76,8 @@ public class CalculaImpostoController {
         "        GRUMKP.DESCRGRUMARKUP," +
         "        PER.PRIORIDADE," +
         "        PMK.CODMARKUP," +
-        "        NVL(CUS.CUSGER, 0) / NULLIF(1 - ((NVL(PMK.PERCMARKUP, 0) + NVL((SELECT SUM(PERCDESP) FROM AD_DESPOPER WHERE ATIVO = 'S' AND CODEMP = :CODEMP), 0)) / 100.0), 0) AS PRECO_CALCULADO," +
+        "        (NVL(CUS.CUSGER, 0) * (1 - NVL(DES.PERCENTUAL, 0) / 100.0)) / NULLIF(1 - ((NVL(PMK.PERCMARKUP, 0) + NVL((SELECT SUM(PERCDESP) FROM AD_DESPOPER WHERE ATIVO = 'S' AND CODEMP = :CODEMP), 0)) / 100.0), 0) AS PRECO_CALCULADO," +
+        "        NVL(DES.PERCENTUAL, 0) AS PERCDESC," +
         "        NVL(EST.ESTOQUE, 0) - NVL(EST.RESERVADO, 0) AS QTDESTOQUE," +
         "        NVL(EST.RESERVADO, 0) AS QTDRESERVADO," +
         "        COALESCE((SELECT SUM(I.QTDNEG) FROM TGFITE I JOIN TGFCAB C ON I.NUNOTA = C.NUNOTA WHERE I.CODPROD = PRO.CODPROD AND I.PENDENTE = 'S' AND C.TIPMOV = 'O' AND C.STATUSNOTA = 'L'), 0) AS COMPRAPENDENTE," +
@@ -115,6 +116,17 @@ public class CalculaImpostoController {
         "    LEFT JOIN TGFCUS CUS ON CUS.CODPROD = PRO.CODPROD" +
         "        AND (CUS.CODEMP = :CODEMP OR :CODEMP IS NULL)" +
         "        AND CUS.DTATUAL = (SELECT MAX(DTATUAL) FROM TGFCUS WHERE CODPROD = PRO.CODPROD AND CODEMP = :CODEMP)" +
+        "    LEFT JOIN TGFDES DES ON (" +
+        "        DES.ROWID = (" +
+        "            SELECT D2.ROWID FROM TGFDES D2" +
+        "            WHERE (D2.CODEMP = :CODEMP OR D2.CODEMP = 0)" +
+        "                AND (D2.CODPARC = :CODPARC OR D2.CODPARC = 0)" +
+        "                AND D2.CODPROD = PRO.CODPROD" +
+        "                AND D2.DTINICIAL <= SYSDATE AND D2.DTFINAL >= SYSDATE" +
+        "            ORDER BY D2.DTFINAL DESC" +
+        "            FETCH FIRST 1 ROW ONLY" +
+        "        )" +
+        "    )" +
         "    LEFT JOIN TGFEST EST ON PRO.CODPROD = EST.CODPROD AND EST.CODEMP = :CODEMP" +
         "        AND ((:IS_TOP1057 = 1 AND EST.CODLOCAL = 201) OR (:IS_TOP1057 = 0 AND EST.CODLOCAL = 101))" +
         ")" +
@@ -221,7 +233,6 @@ public class CalculaImpostoController {
 
         List<ProdutoAlternativoDTO> produtos = new ArrayList<>();
         Map<BigDecimal, BigDecimal> impostosMap  = new HashMap<>();
-        Map<BigDecimal, BigDecimal> percDescMap  = new HashMap<>();
         java.util.Set<BigDecimal> failedProducts = new java.util.HashSet<>();
         int offset = request.getOffset() < 0  ? 0  : request.getOffset();
         int limit  = request.getLimit()  <= 0 ? 10 : request.getLimit();
@@ -275,6 +286,7 @@ public class CalculaImpostoController {
                 dto.setFaixa3(rs.getBigDecimal("FAIXA3"));
                 dto.setFaixa4(rs.getBigDecimal("FAIXA4"));
                 dto.setFaixa5(rs.getBigDecimal("FAIXA5"));
+                dto.setPercDesc(rs.getBigDecimal("PERCDESC"));
                 produtos.add(dto);
             }
             logger.info("buscarAlternativos - produtos encontrados: " + produtos.size() + " para CODPROD=" + codProd);
@@ -291,7 +303,6 @@ public class CalculaImpostoController {
                     BigDecimal codProdItem = p.getCodProd();
                     if (!temCusto(p)) {
                         impostosMap.put(codProdItem, BigDecimal.ZERO);
-                        percDescMap.put(codProdItem, BigDecimal.ZERO);
                         continue;
                     }
                     try {
@@ -342,29 +353,11 @@ public class CalculaImpostoController {
                                 .add(aliqCofins)
                                 .add(aliqIss)).setScale(2);
 
-                        BigDecimal percDescItem = BigDecimal.ZERO;
-                        try {
-                            JapeWrapper descontoDAO = JapeFactory.dao(DynamicEntityNames.DESCONTO);
-                            java.sql.Timestamp hoje = new java.sql.Timestamp(System.currentTimeMillis());
-                            Collection<DynamicVO> descontos = descontoDAO.findAndOrderBy(
-                                    "(CODEMP = ? OR CODEMP = 0) AND (CODPARC = ? OR CODPARC = 0)"
-                                            + " AND CODPROD = ? AND DTINICIAL <= ? AND DTFINAL >= ?",
-                                    "DTFINAL DESC",
-                                    codEmp, codParc, codProdItem, hoje, hoje);
-                            if (descontos != null && !descontos.isEmpty()) {
-                                percDescItem = descontos.iterator().next().asBigDecimalOrZero("PERCENTUAL");
-                            }
-                        } catch (Exception exDesconto) {
-                            logger.warning("buscarAlternativos - CODPROD=" + codProdItem
-                                    + " falha ao consultar desconto promocional (Desconto/TGFDES): " + exDesconto.getMessage());
-                        }
-
                         logger.info("[IMPOSTOS] CODPROD=" + codProdItem
-                                + " | totalAliq=" + totalAliq + "% | percDesc=" + percDescItem + "%"
-                                + " | formula: preco = custo / (1 - " + totalAliq + "/100) * (1 - " + percDescItem + "/100)");
+                                + " | totalAliq=" + totalAliq + "% | percDesc=" + p.getPercDesc() + "%"
+                                + " | formula: preco = (custo * (1 - " + p.getPercDesc() + "/100)) / (1 - markup/100) / (1 - " + totalAliq + "/100)");
 
                         impostosMap.put(codProdItem, totalAliq);
-                        percDescMap.put(codProdItem, percDescItem);
                     } catch (Exception ex) {
                         logger.warning("buscarAlternativos - CODPROD=" + codProdItem + " ignorado: " + ex.getMessage());
                         failedProducts.add(codProdItem);
@@ -373,7 +366,8 @@ public class CalculaImpostoController {
                 logger.info("buscarAlternativos - impostos calculados para " + impostosMap.size() + " produto(s)");
             }
 
-            // 4. Aplicar fórmula: preco_final_faixa = numerador / (1 - impostos/100) * (1 - percDesc/100)
+            // 4. Aplicar grossup de impostos: preco_final_faixa = numerador / (1 - impostos/100)
+            // (o desconto promocional já foi aplicado ao CUSGER dentro do SQL_ALTERNATIVOS)
             for (ProdutoAlternativoDTO p : produtos) {
                 if (failedProducts.contains(p.getCodProd())) {
                     p.setFaixa1(null);
@@ -397,21 +391,10 @@ public class CalculaImpostoController {
                     p.setFaixa4(aplicarDenominador(p.getFaixa4(), denominador));
                     p.setFaixa5(aplicarDenominador(p.getFaixa5(), denominador));
                 }
-                BigDecimal percDesc = percDescMap.getOrDefault(p.getCodProd(), BigDecimal.ZERO);
-                p.setPercDesc(percDesc);
-                if (percDesc.compareTo(BigDecimal.ZERO) > 0) {
-                    BigDecimal fatorDesc = BigDecimal.ONE.subtract(
-                            percDesc.divide(new BigDecimal("100"), 10, RoundingMode.HALF_UP));
-                    p.setFaixa1(aplicarFator(p.getFaixa1(), fatorDesc));
-                    p.setFaixa2(aplicarFator(p.getFaixa2(), fatorDesc));
-                    p.setFaixa3(aplicarFator(p.getFaixa3(), fatorDesc));
-                    p.setFaixa4(aplicarFator(p.getFaixa4(), fatorDesc));
-                    p.setFaixa5(aplicarFator(p.getFaixa5(), fatorDesc));
-                }
                 logger.info("[FORMULA] CODPROD=" + p.getCodProd()
                         + " | faixas finais: F1=" + p.getFaixa1() + " F2=" + p.getFaixa2()
                         + " F3=" + p.getFaixa3() + " F4=" + p.getFaixa4() + " F5=" + p.getFaixa5()
-                        + " | percDesc=" + percDesc + "%");
+                        + " | percDesc=" + p.getPercDesc() + "%");
             }
 
         } catch (Exception e) {
@@ -649,11 +632,6 @@ public class CalculaImpostoController {
     private BigDecimal aplicarDenominador(BigDecimal numerador, BigDecimal denominador) {
         if (numerador == null || numerador.compareTo(BigDecimal.ZERO) == 0) return null;
         return numerador.divide(denominador, 2, RoundingMode.HALF_UP);
-    }
-
-    private BigDecimal aplicarFator(BigDecimal valor, BigDecimal fator) {
-        if (valor == null || valor.compareTo(BigDecimal.ZERO) == 0) return null;
-        return valor.multiply(fator).setScale(2, RoundingMode.HALF_UP);
     }
 
 }
