@@ -1,5 +1,6 @@
 package br.com.fabricante.addon.exemplos.listeners;
 
+import br.com.fabricante.addon.exemplos.util.FaixaPrecoImpostoHelper;
 import br.com.sankhya.jape.EntityFacade;
 import br.com.sankhya.jape.event.PersistenceEvent;
 import br.com.sankhya.jape.event.PersistenceEventAdapter;
@@ -22,7 +23,7 @@ public class ItemNotaListener extends PersistenceEventAdapter {
     private static final String SQL_FAIXAS_PRODUTO =
         "SELECT FAIXA1, FAIXA2, FAIXA3, FAIXA4, FAIXA5 FROM (" +
         "    SELECT PMK.CODMARKUP," +
-        "        NVL(CUS.CUSGER, 0) / NULLIF(1 - ((NVL(PMK.PERCMARKUP, 0) + NVL((SELECT SUM(PERCDESP) FROM AD_DESPOPER WHERE ATIVO = 'S' AND CODEMP = :CODEMP), 0)) / 100.0), 0) AS PRECO_CALCULADO" +
+        "        (NVL(CUS.CUSGER, 0) * (1 - NVL(DES.PERCENTUAL, 0) / 100.0)) / NULLIF(1 - ((NVL(PMK.PERCMARKUP, 0) + NVL((SELECT SUM(PERCDESP) FROM AD_DESPOPER WHERE ATIVO = 'S' AND CODEMP = :CODEMP), 0)) / 100.0), 0) AS PRECO_CALCULADO" +
         "    FROM TGFPRO PRO" +
         "    LEFT JOIN AD_PERFPRODMKP PER ON (" +
         "        PER.ROWID = (" +
@@ -52,6 +53,17 @@ public class ItemNotaListener extends PersistenceEventAdapter {
         "    LEFT JOIN TGFCUS CUS ON CUS.CODPROD = PRO.CODPROD" +
         "        AND CUS.CODEMP = :CODEMP" +
         "        AND CUS.DTATUAL = (SELECT MAX(DTATUAL) FROM TGFCUS WHERE CODPROD = PRO.CODPROD AND CODEMP = :CODEMP)" +
+        "    LEFT JOIN TGFDES DES ON (" +
+        "        DES.ROWID = (" +
+        "            SELECT D2.ROWID FROM TGFDES D2" +
+        "            WHERE (D2.CODEMP = :CODEMP OR D2.CODEMP = 0)" +
+        "                AND (D2.CODPARC = :CODPARC OR D2.CODPARC = 0)" +
+        "                AND D2.CODPROD = PRO.CODPROD" +
+        "                AND D2.DTINICIAL <= SYSDATE AND D2.DTFINAL >= SYSDATE" +
+        "            ORDER BY D2.DTFINAL DESC" +
+        "            FETCH FIRST 1 ROW ONLY" +
+        "        )" +
+        "    )" +
         "    WHERE PRO.CODPROD = :CODPROD" +
         ") PIVOT (" +
         "    MAX(PRECO_CALCULADO)" +
@@ -86,16 +98,40 @@ public class ItemNotaListener extends PersistenceEventAdapter {
         if (cab == null) return;
 
         BigDecimal codEmp = cab.asBigDecimalOrZero("CODEMP");
+        BigDecimal codParc = cab.asBigDecimalOrZero("CODPARC");
+        BigDecimal codTipOper = cab.asBigDecimalOrZero("CODTIPOPER");
         NativeSql sql = new NativeSql(dwf.getJdbcWrapper());
         sql.setNamedParameter("CODEMP", codEmp);
+        sql.setNamedParameter("CODPARC", codParc);
         sql.setNamedParameter("CODPROD", codProd);
         ResultSet rs = sql.executeQuery(SQL_FAIXAS_PRODUTO);
         if (!rs.next()) return;
 
-        BigDecimal faixaPreco = calcularFaixaPreco(vlrUnit,
-            rs.getBigDecimal("FAIXA1"), rs.getBigDecimal("FAIXA2"),
-            rs.getBigDecimal("FAIXA3"), rs.getBigDecimal("FAIXA4"),
-            rs.getBigDecimal("FAIXA5"));
+        BigDecimal faixa1 = rs.getBigDecimal("FAIXA1");
+        BigDecimal faixa2 = rs.getBigDecimal("FAIXA2");
+        BigDecimal faixa3 = rs.getBigDecimal("FAIXA3");
+        BigDecimal faixa4 = rs.getBigDecimal("FAIXA4");
+        BigDecimal faixa5 = rs.getBigDecimal("FAIXA5");
+
+        if (FaixaPrecoImpostoHelper.temCusto(faixa1, faixa2, faixa3, faixa4, faixa5)) {
+            BigDecimal denominador;
+            try {
+                denominador = FaixaPrecoImpostoHelper.calcularDenominadorImpostos(
+                        dwf, nunota, codEmp, codProd, codParc, codTipOper);
+            } catch (Exception ex) {
+                logger.warning("ItemNotaListener - CODPROD=" + codProd + " AD_FAIXAPRECO não recalculado: " + ex.getMessage());
+                return;
+            }
+            if (denominador.compareTo(BigDecimal.ZERO) > 0) {
+                faixa1 = FaixaPrecoImpostoHelper.aplicarDenominador(faixa1, denominador);
+                faixa2 = FaixaPrecoImpostoHelper.aplicarDenominador(faixa2, denominador);
+                faixa3 = FaixaPrecoImpostoHelper.aplicarDenominador(faixa3, denominador);
+                faixa4 = FaixaPrecoImpostoHelper.aplicarDenominador(faixa4, denominador);
+                faixa5 = FaixaPrecoImpostoHelper.aplicarDenominador(faixa5, denominador);
+            }
+        }
+
+        BigDecimal faixaPreco = calcularFaixaPreco(vlrUnit, faixa1, faixa2, faixa3, faixa4, faixa5);
 
         if (faixaPreco != null) {
             vo.setProperty("AD_FAIXAPRECO", faixaPreco);

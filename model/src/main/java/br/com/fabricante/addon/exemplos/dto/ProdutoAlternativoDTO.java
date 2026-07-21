@@ -17,8 +17,9 @@ public class ProdutoAlternativoDTO {
     private BigDecimal codGruMarkup;
     private String descrGruMarkup;
     private BigDecimal prioridade;
-    private BigDecimal qtdEstoque;
-    private BigDecimal qtdReservado;
+    private BigDecimal estoque;
+    private BigDecimal saldo;
+    private BigDecimal reservado;
     private BigDecimal compraPendente;
     private BigDecimal faixa1;
     private BigDecimal faixa2;

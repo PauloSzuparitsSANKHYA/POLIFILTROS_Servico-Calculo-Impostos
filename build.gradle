@@ -24,7 +24,7 @@ buildscript {
 //Substitua o valor inserido em 'group' por seu domínio, por exemplo: 'br.com.suaempresa'.
 group = 'br.com.bandeirantes'
 //Especifica a versão do addon. É útil para controle de versões, deploys e compatibilidade com o sistema.
-version="7.0.0"
+version="7.8.4"
 //Define uma breve descrição do addon, explicando sua funcionalidade ou objetivo principal.
 description = "Servico Calculo Imposto + Valores"
 
