@@ -44,7 +44,9 @@ public class FaixaPrecoImpostoHelper {
         "ORDER BY NOMEIMP";
 
     /**
-     * FAIXA_FINAL = numerador / ((1 - ALIQICMS/100) * (1 - (ALIQPIS+ALIQCOFINS)/100)).
+     * FAIXA_FINAL = numerador / ((1 - ALIQICMSEFETIVA/100) * (1 - (ALIQPIS+ALIQCOFINS)/100)),
+     * onde ALIQICMSEFETIVA = ALIQICMS * (1 - reducaoBase/100), com reducaoBase vindo da tela
+     * Alíquotas de ICMS (InfoAliquota.reducaoBase).
      * Retorna o denominador (produto dos dois fatores) a aplicar sobre o numerador calculado em SQL.
      */
     public static BigDecimal calcularDenominadorImpostos(EntityFacade entityFacade, BigDecimal nunota,
@@ -65,6 +67,36 @@ public class FaixaPrecoImpostoHelper {
 
         BigDecimal aliqIcms = itemDVO.asBigDecimalOrZero("ALIQICMS");
 
+        BigDecimal reducaoBaseIcms = BigDecimal.ZERO;
+        ImpostosHelpper.InfoAliquota infoAliquota = imposto.getInfoAliquota();
+        if (infoAliquota != null && infoAliquota.reducaoBase != null) {
+            reducaoBaseIcms = infoAliquota.reducaoBase;
+        }
+        BigDecimal aliqIcmsEfetiva = aliqIcms.multiply(
+                BigDecimal.ONE.subtract(reducaoBaseIcms.divide(CEM, 10, RoundingMode.HALF_UP)));
+
+        BigDecimal[] pisCofins = buscarAliquotasPisCofins(entityFacade, codProd, codEmp, codParc, codTipOper);
+        BigDecimal aliqPis = pisCofins[0];
+        BigDecimal aliqCofins = pisCofins[1];
+
+        BigDecimal fatorIcms = BigDecimal.ONE.subtract(aliqIcmsEfetiva.divide(CEM, 10, RoundingMode.HALF_UP));
+        BigDecimal fatorPisCofins = BigDecimal.ONE.subtract(
+                aliqPis.add(aliqCofins).divide(CEM, 10, RoundingMode.HALF_UP));
+        BigDecimal denominador = fatorIcms.multiply(fatorPisCofins);
+
+        logger.info("[IMPOSTOS] CODPROD=" + codProd
+                + " | ICMS=" + aliqIcms + "% | reducaoBaseICMS=" + reducaoBaseIcms + "% | ICMSEfetivo=" + aliqIcmsEfetiva + "%"
+                + " | PIS=" + aliqPis + "% | COFINS=" + aliqCofins + "%"
+                + " | denominador=(1-" + aliqIcmsEfetiva + "/100)*(1-(" + aliqPis + "+" + aliqCofins + ")/100)=" + denominador);
+
+        return denominador;
+    }
+
+    /**
+     * Alíquotas de PIS/COFINS cadastradas na TGFIFE para o produto. Retorna {ALIQPIS, ALIQCOFINS}.
+     */
+    public static BigDecimal[] buscarAliquotasPisCofins(EntityFacade entityFacade, BigDecimal codProd,
+            BigDecimal codEmp, BigDecimal codParc, BigDecimal codTipOper) throws Exception {
         BigDecimal aliqPis = BigDecimal.ZERO;
         BigDecimal aliqCofins = BigDecimal.ZERO;
         NativeSql sqlPisCofins = new NativeSql(entityFacade.getJdbcWrapper());
@@ -83,17 +115,7 @@ public class FaixaPrecoImpostoHelper {
                 aliqCofins = aliq;
             }
         }
-
-        BigDecimal fatorIcms = BigDecimal.ONE.subtract(aliqIcms.divide(CEM, 10, RoundingMode.HALF_UP));
-        BigDecimal fatorPisCofins = BigDecimal.ONE.subtract(
-                aliqPis.add(aliqCofins).divide(CEM, 10, RoundingMode.HALF_UP));
-        BigDecimal denominador = fatorIcms.multiply(fatorPisCofins);
-
-        logger.info("[IMPOSTOS] CODPROD=" + codProd
-                + " | ICMS=" + aliqIcms + "% | PIS=" + aliqPis + "% | COFINS=" + aliqCofins + "%"
-                + " | denominador=(1-" + aliqIcms + "/100)*(1-(" + aliqPis + "+" + aliqCofins + ")/100)=" + denominador);
-
-        return denominador;
+        return new BigDecimal[]{aliqPis, aliqCofins};
     }
 
     public static BigDecimal aplicarDenominador(BigDecimal numerador, BigDecimal denominador) {

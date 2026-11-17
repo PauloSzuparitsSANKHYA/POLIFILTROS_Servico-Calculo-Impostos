@@ -80,10 +80,11 @@ public class CalculaImpostoController {
         "        NVL(EST.ESTOQUE, 0) AS ESTOQUE," +
         "        NVL(EST.ESTOQUE, 0) - NVL(EST.RESERVADO, 0) AS SALDO," +
         "        NVL(EST.RESERVADO, 0) AS RESERVADO," +
-        "        COALESCE((SELECT SUM(I.QTDNEG) FROM TGFITE I JOIN TGFCAB C ON I.NUNOTA = C.NUNOTA WHERE I.CODPROD = PRO.CODPROD AND I.PENDENTE = 'S' AND C.TIPMOV = 'O' AND C.STATUSNOTA = 'L'), 0) AS COMPRAPENDENTE," +
+        "        COALESCE((SELECT SUM(I.QTDNEG - NVL(I.QTDENTREGUE, 0)) FROM TGFITE I JOIN TGFCAB C ON I.NUNOTA = C.NUNOTA WHERE I.CODPROD = PRO.CODPROD AND I.PENDENTE = 'S' AND C.TIPMOV = 'O' AND C.STATUSNOTA = 'L'" +
+        "          AND ((:IS_TOP1057 = 1 AND I.CODLOCALORIG = 201) OR (:IS_TOP1057 = 0 AND I.CODLOCALORIG = EMP.AD_CODLOCAL))), 0) AS COMPRAPENDENTE," +
         "        (SELECT TO_CHAR(MIN(ITE2.AD_DTPREVENTGER), 'DD/MM/YYYY') FROM TGFITE ITE2 JOIN TGFCAB CAB2 ON CAB2.NUNOTA = ITE2.NUNOTA WHERE ITE2.CODPROD = PRO.CODPROD AND ITE2.CODEMP = :CODEMP AND CAB2.STATUSNOTA = 'L' AND CAB2.PENDENTE = 'S' AND ITE2.AD_DTPREVENTGER IS NOT NULL) AS DTPROXENTREGA," +
-        "        (SELECT MAX(ITE.VLRUNIT) FROM TGFCAB CAB JOIN TGFITE ITE ON ITE.NUNOTA = CAB.NUNOTA WHERE ITE.CODPROD = PRO.CODPROD AND CAB.CODPARC = :CODPARC AND CAB.CODTIPOPER = 1000 AND CAB.STATUSNOTA = 'L' AND CAB.DTNEG = (SELECT MAX(DTNEG) FROM TGFCAB WHERE CODTIPOPER = 1000 AND STATUSNOTA = 'L')) AS VLRULTIMACOTACAO," +
-        "        (SELECT MAX(ITE.VLRUNIT) FROM TGFCAB CAB JOIN TGFITE ITE ON ITE.NUNOTA = CAB.NUNOTA WHERE ITE.CODPROD = PRO.CODPROD AND CAB.CODPARC = :CODPARC AND CAB.TIPMOV = 'V' AND CAB.STATUSNOTA = 'L' AND CAB.DTNEG = (SELECT MAX(DTNEG) FROM TGFCAB WHERE CAB.TIPMOV = 'V' AND STATUSNOTA = 'L')) AS VLRULTIMAVENDA" +
+        "        (SELECT MAX(ITE.VLRUNIT) FROM TGFCAB CAB JOIN TGFITE ITE ON ITE.NUNOTA = CAB.NUNOTA WHERE ITE.CODPROD = PRO.CODPROD AND CAB.CODPARC = :CODPARC AND CAB.CODTIPOPER = 1000 AND CAB.STATUSNOTA = 'L' AND CAB.DTNEG = (SELECT MAX(CABCOT.DTNEG) FROM TGFCAB CABCOT JOIN TGFITE ITECOT ON ITECOT.NUNOTA = CABCOT.NUNOTA WHERE ITECOT.CODPROD = PRO.CODPROD AND CABCOT.CODPARC = :CODPARC AND CABCOT.CODTIPOPER = 1000 AND CABCOT.STATUSNOTA = 'L')) AS VLRULTIMACOTACAO," +
+        "        (SELECT MAX(ITE.VLRUNIT) FROM TGFCAB CAB JOIN TGFITE ITE ON ITE.NUNOTA = CAB.NUNOTA WHERE ITE.CODPROD = PRO.CODPROD AND CAB.CODPARC = :CODPARC AND CAB.TIPMOV = 'V' AND CAB.STATUSNOTA = 'L' AND CAB.DTNEG = (SELECT MAX(CABVDA.DTNEG) FROM TGFCAB CABVDA JOIN TGFITE ITEVDA ON ITEVDA.NUNOTA = CABVDA.NUNOTA WHERE ITEVDA.CODPROD = PRO.CODPROD AND CABVDA.CODPARC = :CODPARC AND CABVDA.TIPMOV = 'V' AND CABVDA.STATUSNOTA = 'L')) AS VLRULTIMAVENDA" +
         "    FROM LISTA_PRODUTOS LP" +
         "    JOIN TGFPRO PRO ON LP.CODPROD = PRO.CODPROD" +
         "    JOIN TGFGRU GRU ON PRO.CODGRUPOPROD = GRU.CODGRUPOPROD" +
@@ -127,8 +128,9 @@ public class CalculaImpostoController {
         "            FETCH FIRST 1 ROW ONLY" +
         "        )" +
         "    )" +
+        "    LEFT JOIN TSIEMP EMP ON EMP.CODEMP = :CODEMP" +
         "    LEFT JOIN TGFEST EST ON PRO.CODPROD = EST.CODPROD AND EST.CODEMP = :CODEMP" +
-        "        AND ((:IS_TOP1057 = 1 AND EST.CODLOCAL = 201) OR (:IS_TOP1057 = 0 AND EST.CODLOCAL = 101))" +
+        "        AND ((:IS_TOP1057 = 1 AND EST.CODLOCAL = 201) OR (:IS_TOP1057 = 0 AND EST.CODLOCAL = EMP.AD_CODLOCAL))" +
         "        AND EST.CODPARC = 0" +
         "        AND EST.CONTROLE = ' '" +
         ")" +
@@ -160,6 +162,9 @@ public class CalculaImpostoController {
     private static final String SQL_BATCH_PRODUTO_REFERENCIA =
         "SELECT CODPROD, CODVOL, NVL(CODLOCALPADRAO, 0) AS CODLOCALPADRAO, REFERENCIA" +
         " FROM TGFPRO WHERE CODPROD IN (%s)";
+
+    private static final String SQL_CODLOCAL_EMPRESA =
+        "SELECT NVL(AD_CODLOCAL, 0) AS AD_CODLOCAL FROM TSIEMP WHERE CODEMP = :CODEMP";
 
     private static final String SQL_ZERAR_DESCONTO_ITEM =
         "UPDATE TGFITE SET PERCDESC = 0, VLRDESC = 0" +
@@ -380,6 +385,20 @@ public class CalculaImpostoController {
             }
             Map<BigDecimal, Object[]> produtoDataMap = carregarDadosProdutosComReferencia(dwf, codProdParaCarregar);
 
+            // CODLOCAL: TOP 1057 -> local 201 fixo (independe do produto).
+            // Fora isso, usa o CODLOCALPADRAO do produto; só cai para TSIEMP.AD_CODLOCAL se o produto não tiver local padrão.
+            BigDecimal codEmp = cab.asBigDecimalOrZero("CODEMP");
+            BigDecimal codTipOper = cab.asBigDecimalOrZero("CODTIPOPER");
+            final boolean isTop1057 = codTipOper.intValue() == 1057;
+            BigDecimal codLocalEmpresaTmp = BigDecimal.ZERO;
+            if (!isTop1057) {
+                NativeSql sqlCodLocal = new NativeSql(dwf.getJdbcWrapper());
+                sqlCodLocal.setNamedParameter("CODEMP", codEmp);
+                ResultSet rsCodLocal = sqlCodLocal.executeQuery(SQL_CODLOCAL_EMPRESA);
+                codLocalEmpresaTmp = rsCodLocal.next() ? rsCodLocal.getBigDecimal("AD_CODLOCAL") : BigDecimal.ZERO;
+            }
+            final BigDecimal codLocalEmpresa = codLocalEmpresaTmp;
+
             final ServiceContext serviceContext = ServiceContext.getCurrent();
 
             hnd.execEnsuringTX(new JapeSession.TXBlock() {
@@ -399,8 +418,16 @@ public class CalculaImpostoController {
                         if (prodData == null) {
                             throw new IllegalStateException("Dados do produto não encontrados: CODPROD=" + codProd);
                         }
-                        String    codVol    = (String)     prodData[0];
-                        BigDecimal codLocal = (BigDecimal) prodData[1];
+                        String codVol = (String) prodData[0];
+                        BigDecimal codLocalPadrao = (BigDecimal) prodData[1];
+                        BigDecimal codLocal;
+                        if (isTop1057) {
+                            codLocal = new BigDecimal(201);
+                        } else if (codLocalPadrao != null && codLocalPadrao.compareTo(BigDecimal.ZERO) > 0) {
+                            codLocal = codLocalPadrao;
+                        } else {
+                            codLocal = codLocalEmpresa;
+                        }
 
                         DynamicVO itemVO = (DynamicVO) dwf.getDefaultValueObjectInstance(DynamicEntityNames.ITEM_NOTA);
                         itemVO.setProperty("NUNOTA",   nuNota);

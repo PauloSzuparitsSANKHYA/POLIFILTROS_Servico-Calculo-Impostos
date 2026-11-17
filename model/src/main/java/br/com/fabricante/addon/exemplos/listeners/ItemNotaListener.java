@@ -12,6 +12,7 @@ import br.com.sankhya.modelcore.util.EntityFacadeFactory;
 import br.com.sankhya.studio.annotations.Listener;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.ResultSet;
 import java.util.logging.Logger;
 
@@ -70,6 +71,49 @@ public class ItemNotaListener extends PersistenceEventAdapter {
         "    FOR CODMARKUP IN (1 AS FAIXA1, 2 AS FAIXA2, 3 AS FAIXA3, 4 AS FAIXA4, 5 AS FAIXA5)" +
         ")";
 
+    private static final BigDecimal CEM = new BigDecimal("100");
+
+    // Mesma regra das antigas expressões de AD_MARGEMBRUTA / AD_MARGEMLIQ
+    private static final String SQL_BASE_MARGEM =
+        "SELECT" +
+        "    NVL((SELECT MAX(CUSGER) KEEP (DENSE_RANK LAST ORDER BY DTATUAL)" +
+        "         FROM TGFCUS WHERE CODPROD = :CODPROD AND CODEMP = :CODEMP), 0) AS CUSGER," +
+        "    NVL((SELECT PERCENTUAL FROM TGFDES" +
+        "         WHERE CODPROD = :CODPROD" +
+        "           AND (CODEMP = :CODEMP OR CODEMP = 0)" +
+        "           AND (CODPARC = :CODPARC OR CODPARC = 0)" +
+        "           AND TRUNC(SYSDATE) BETWEEN DTINICIAL AND DTFINAL" +
+        "         ORDER BY DTFINAL DESC FETCH FIRST 1 ROW ONLY), 0) AS PERCDESC," +
+        "    NVL((SELECT SUM(PERCDESP) FROM AD_DESPOPER WHERE ATIVO = 'S' AND CODEMP = :CODEMP), 0) AS PERCDESP," +
+        "    (SELECT COUNT(*) FROM TGFDIN WHERE NUNOTA = :NUNOTA AND SEQUENCIA = :SEQUENCIA) AS QTDDIN," +
+        "    NVL((SELECT MAX(ALIQUOTA) FROM TGFDIN WHERE NUNOTA = :NUNOTA AND SEQUENCIA = :SEQUENCIA AND CODIMP = 1), 0) AS ALIQ_ICMS," +
+        "    NVL((SELECT MAX(ALIQUOTA) FROM TGFDIN WHERE NUNOTA = :NUNOTA AND SEQUENCIA = :SEQUENCIA AND CODIMP = 6), 0) AS ALIQ_PIS," +
+        "    NVL((SELECT MAX(ALIQUOTA) FROM TGFDIN WHERE NUNOTA = :NUNOTA AND SEQUENCIA = :SEQUENCIA AND CODIMP = 7), 0) AS ALIQ_COFINS " +
+        "FROM DUAL";
+
+    @Override
+    public void beforeInsert(PersistenceEvent event) throws Exception {
+        DynamicVO vo = (DynamicVO) event.getVo();
+
+        BigDecimal nunota  = vo.asBigDecimal("NUNOTA");
+        BigDecimal codProd = vo.asBigDecimal("CODPROD");
+        if (nunota == null || codProd == null) return;
+
+        DynamicVO cab = JapeFactory.dao(DynamicEntityNames.CABECALHO_NOTA).findByPK(nunota);
+        if (cab == null) return;
+
+        EntityFacade dwf = EntityFacadeFactory.getDWFFacade();
+        BigDecimal vlrUnit = vo.asBigDecimalOrZero("VLRUNIT");
+
+        atualizarMargens(vo, dwf, cab, nunota, vo.asBigDecimal("SEQUENCIA"), codProd, vlrUnit);
+
+        // Inclusão pela tela do addon já vem com AD_FAIXAPRECO calculado pelo controller
+        if (vo.asBigDecimal("AD_FAIXAPRECO") != null) return;
+        if (vlrUnit.compareTo(BigDecimal.ZERO) <= 0) return;
+
+        atualizarFaixaPreco(vo, dwf, cab, nunota, codProd, vlrUnit);
+    }
+
     @Override
     public void beforeUpdate(PersistenceEvent event) throws Exception {
         DynamicVO vo = (DynamicVO) event.getVo();
@@ -79,11 +123,18 @@ public class ItemNotaListener extends PersistenceEventAdapter {
         BigDecimal sequencia = vo.asBigDecimal("SEQUENCIA");
         if (nunota == null || codProd == null || sequencia == null) return;
 
-        BigDecimal vlrUnit = vo.asBigDecimalOrZero("VLRUNIT");
-        if (vlrUnit == null || vlrUnit.compareTo(BigDecimal.ZERO) <= 0) return;
+        DynamicVO cab = JapeFactory.dao(DynamicEntityNames.CABECALHO_NOTA).findByPK(nunota);
+        if (cab == null) return;
 
-        // Só recalcula se o usuário realmente alterou o VLRUNIT
         EntityFacade dwf = EntityFacadeFactory.getDWFFacade();
+        BigDecimal vlrUnit = vo.asBigDecimalOrZero("VLRUNIT");
+
+        // Margens são recalculadas em toda alteração: custo, desconto e impostos (TGFDIN) podem ter mudado
+        atualizarMargens(vo, dwf, cab, nunota, sequencia, codProd, vlrUnit);
+
+        if (vlrUnit.compareTo(BigDecimal.ZERO) <= 0) return;
+
+        // Faixa de preço só é recalculada se o usuário realmente alterou o VLRUNIT
         NativeSql sqlVlr = new NativeSql(dwf.getJdbcWrapper());
         sqlVlr.setNamedParameter("NUNOTA", nunota);
         sqlVlr.setNamedParameter("SEQUENCIA", sequencia);
@@ -94,9 +145,84 @@ public class ItemNotaListener extends PersistenceEventAdapter {
         BigDecimal vlrUnitAtual = rsVlr.getBigDecimal("VLRUNIT");
         if (vlrUnitAtual != null && vlrUnit.compareTo(vlrUnitAtual) == 0) return;
 
-        DynamicVO cab = JapeFactory.dao(DynamicEntityNames.CABECALHO_NOTA).findByPK(nunota);
-        if (cab == null) return;
+        atualizarFaixaPreco(vo, dwf, cab, nunota, codProd, vlrUnit);
+    }
 
+    /**
+     * Preenche AD_MARGEMBRUTA e AD_MARGEMLIQ:
+     *   BRUTA = (1 - CUSGER*(1-DESC/100) / (VLRUNIT*(1-ICMS/100)*(1-(PIS+COFINS)/100))) * 100
+     *   LIQ   = BRUTA - SUM(AD_DESPOPER.PERCDESP)
+     * Alíquotas vêm da TGFDIN (CODIMP 1, 6, 7). Se o item ainda não tem TGFDIN (inclusão),
+     * usa ALIQICMS do próprio item e PIS/COFINS da TGFIFE.
+     */
+    private void atualizarMargens(DynamicVO vo, EntityFacade dwf, DynamicVO cab, BigDecimal nunota,
+                                  BigDecimal sequencia, BigDecimal codProd, BigDecimal vlrUnit) {
+        if (vlrUnit.compareTo(BigDecimal.ZERO) <= 0) {
+            vo.setProperty("AD_MARGEMBRUTA", BigDecimal.ZERO);
+            vo.setProperty("AD_MARGEMLIQ", BigDecimal.ZERO);
+            return;
+        }
+
+        try {
+            BigDecimal codEmp = cab.asBigDecimal("CODEMP") != null ? cab.asBigDecimal("CODEMP") : BigDecimal.ONE;
+            BigDecimal codParc = cab.asBigDecimalOrZero("CODPARC");
+
+            NativeSql sql = new NativeSql(dwf.getJdbcWrapper());
+            sql.setNamedParameter("CODPROD", codProd);
+            sql.setNamedParameter("CODEMP", codEmp);
+            sql.setNamedParameter("CODPARC", codParc);
+            sql.setNamedParameter("NUNOTA", nunota);
+            sql.setNamedParameter("SEQUENCIA", sequencia != null ? sequencia : new BigDecimal("-1"));
+            ResultSet rs = sql.executeQuery(SQL_BASE_MARGEM);
+            if (!rs.next()) return;
+
+            BigDecimal cusGer   = rs.getBigDecimal("CUSGER");
+            BigDecimal percDesc = rs.getBigDecimal("PERCDESC");
+            BigDecimal percDesp = rs.getBigDecimal("PERCDESP");
+            BigDecimal aliqIcms;
+            BigDecimal aliqPisCofins;
+
+            if (rs.getInt("QTDDIN") > 0) {
+                aliqIcms = rs.getBigDecimal("ALIQ_ICMS");
+                aliqPisCofins = rs.getBigDecimal("ALIQ_PIS").add(rs.getBigDecimal("ALIQ_COFINS"));
+            } else {
+                aliqIcms = vo.asBigDecimalOrZero("ALIQICMS");
+                BigDecimal[] pisCofins = FaixaPrecoImpostoHelper.buscarAliquotasPisCofins(
+                        dwf, codProd, codEmp, codParc, cab.asBigDecimalOrZero("CODTIPOPER"));
+                aliqPisCofins = pisCofins[0].add(pisCofins[1]);
+            }
+
+            BigDecimal custoLiquido = cusGer.multiply(
+                    BigDecimal.ONE.subtract(percDesc.divide(CEM, 10, RoundingMode.HALF_UP)));
+            BigDecimal precoLiquido = vlrUnit
+                    .multiply(BigDecimal.ONE.subtract(aliqIcms.divide(CEM, 10, RoundingMode.HALF_UP)))
+                    .multiply(BigDecimal.ONE.subtract(aliqPisCofins.divide(CEM, 10, RoundingMode.HALF_UP)));
+
+            if (precoLiquido.compareTo(BigDecimal.ZERO) == 0) {
+                logger.warning("ItemNotaListener - CODPROD=" + codProd + " margens não calculadas: preço líquido de impostos = 0");
+                return;
+            }
+
+            BigDecimal margemBruta = BigDecimal.ONE
+                    .subtract(custoLiquido.divide(precoLiquido, 10, RoundingMode.HALF_UP))
+                    .multiply(CEM);
+            BigDecimal margemLiq = margemBruta.subtract(percDesp);
+
+            vo.setProperty("AD_MARGEMBRUTA", margemBruta.setScale(4, RoundingMode.HALF_UP));
+            vo.setProperty("AD_MARGEMLIQ", margemLiq.setScale(4, RoundingMode.HALF_UP));
+
+            logger.info("ItemNotaListener - CODPROD=" + codProd + " VLRUNIT=" + vlrUnit
+                    + " CUSGER=" + cusGer + " DESC=" + percDesc + "% ICMS=" + aliqIcms
+                    + "% PIS+COFINS=" + aliqPisCofins + "% DESP=" + percDesp
+                    + "% => AD_MARGEMBRUTA=" + margemBruta.setScale(4, RoundingMode.HALF_UP)
+                    + " AD_MARGEMLIQ=" + margemLiq.setScale(4, RoundingMode.HALF_UP));
+        } catch (Exception ex) {
+            logger.warning("ItemNotaListener - CODPROD=" + codProd + " margens não calculadas: " + ex.getMessage());
+        }
+    }
+
+    private void atualizarFaixaPreco(DynamicVO vo, EntityFacade dwf, DynamicVO cab, BigDecimal nunota,
+                                     BigDecimal codProd, BigDecimal vlrUnit) throws Exception {
         BigDecimal codEmp = cab.asBigDecimalOrZero("CODEMP");
         BigDecimal codParc = cab.asBigDecimalOrZero("CODPARC");
         BigDecimal codTipOper = cab.asBigDecimalOrZero("CODTIPOPER");
